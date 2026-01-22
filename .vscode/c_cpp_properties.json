@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "name": "ESP-IDF",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/main",
+                "${workspaceFolder}/components/BSP",
+                "${workspaceFolder}/components/BSP/SERVO",
+                "${workspaceFolder}/components/BSP/LED",
+                "${env:IDF_PATH}/components/**"
+            ],
+            "defines": [
+                "ESP_PLATFORM",
+                "IDF_VER=\"v5.5.2-dirty\""
+            ],
+            "compilerPath": "/Users/lixiangyue/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc",
+            "cStandard": "gnu17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        }
+    ],
+    "version": 4
+}

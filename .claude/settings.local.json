@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl:*)",
+      "Bash(source:*)",
+      "Bash(idf.py build)",
+      "Bash(. $HOME/esp/esp-idf/export.sh)"
+    ]
+  }
+}

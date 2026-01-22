@@ -1,0 +1,20 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPath": "/Users/lixiangyue/.espressif/v5.5.2/esp-idf",
+  "idf.pythonInstallPath": "/Users/lixiangyue/.pyenv/versions/3.10.13/bin/python",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.port": "/dev/tty.usbmodem2101",
+  "idf.toolsPath": "/Users/lixiangyue/.espressif",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "clangd.path": "/Users/lixiangyue/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/lixiangyue/Personal/esp32/esp_practice/build"
+  ],
+  "idf.flashType": "UART"
+}
