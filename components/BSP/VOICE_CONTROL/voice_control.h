@@ -140,6 +140,9 @@ private:
   // 解析命令文本
   VoiceCommand parseCommand(const std::string &text);
 
+  // LED快速闪烁（保持原有状态）
+  void blinkLed(int count, int delay_ms);
+
   // 配置
   VoiceControlConfig m_config;
 

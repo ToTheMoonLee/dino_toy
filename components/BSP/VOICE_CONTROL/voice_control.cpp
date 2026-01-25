@@ -249,8 +249,11 @@ void VoiceControl::bindToWakeWord() {
   VoiceControl *self = this;
 
   // 设置唤醒词回调
-  wakeWord.setCallback([](int index) {
+  wakeWord.setCallback([self](int index) {
     ESP_LOGI("VoiceControl", "🎤 唤醒词检测到! 准备接收命令...");
+    if (self) {
+      self->blinkLed(2, self->m_config.flash_delay_ms);
+    }
   });
 
   // 设置命令词回调
@@ -261,4 +264,24 @@ void VoiceControl::bindToWakeWord() {
   });
 
   ESP_LOGI(TAG, "VoiceControl 已绑定到 WakeWord 组件");
+}
+
+void VoiceControl::blinkLed(int count, int delay_ms) {
+  if (count <= 0) {
+    return;
+  }
+  if (delay_ms <= 0) {
+    delay_ms = 100;
+  }
+
+  bool originalLedState = m_ledOn;
+  bool ledOn = true;
+
+  for (int i = 0; i < count * 2; i++) {
+    led_set_state(m_config.led_gpio, ledOn ? 1 : 0);
+    ledOn = !ledOn;
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+  }
+
+  led_set_state(m_config.led_gpio, originalLedState ? 1 : 0);
 }
