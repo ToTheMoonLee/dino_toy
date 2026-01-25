@@ -1,7 +1,7 @@
 #include "voice_control.h"
 #include "esp_log.h"
 #include "led.h"
-// #include "mp3_player.h"  // 暂时禁用
+#include "mp3_player.h"
 #include "servo.h"
 #include "wake_word.h"
 #include <algorithm>
@@ -29,15 +29,23 @@ esp_err_t VoiceControl::init(const VoiceControlConfig &config) {
   servo_set_angle(m_config.servo_center_angle); // 初始中间位置
   m_currentAngle = m_config.servo_center_angle;
 
-  // 暂时禁用 MP3 播放器
-  // ESP_LOGI(TAG, "Initializing MP3 Player (BCK=%d, WS=%d, DOUT=%d)",
-  //          m_config.i2s_bck_io, m_config.i2s_ws_io, m_config.i2s_dout_io);
-  // auto &mp3Player = Mp3Player::instance();
-  // mp3Player.init({
-  //     .bck_io = m_config.i2s_bck_io,
-  //     .ws_io = m_config.i2s_ws_io,
-  //     .dout_io = m_config.i2s_dout_io,
-  // });
+  // 初始化 MP3 播放器（MAX98357）
+  if (m_config.i2s_bck_io != GPIO_NUM_NC && m_config.i2s_ws_io != GPIO_NUM_NC &&
+      m_config.i2s_dout_io != GPIO_NUM_NC) {
+    ESP_LOGI(TAG, "Initializing MP3 Player (BCK=%d, WS=%d, DOUT=%d)",
+             m_config.i2s_bck_io, m_config.i2s_ws_io, m_config.i2s_dout_io);
+    auto &mp3Player = Mp3Player::instance();
+    esp_err_t mp3Ret = mp3Player.init({
+        .bck_io = m_config.i2s_bck_io,
+        .ws_io = m_config.i2s_ws_io,
+        .dout_io = m_config.i2s_dout_io,
+    });
+    if (mp3Ret != ESP_OK) {
+      ESP_LOGW(TAG, "MP3 Player init failed: %s", esp_err_to_name(mp3Ret));
+    }
+  } else {
+    ESP_LOGW(TAG, "MP3 Player pins not set, skip init");
+  }
 
   m_initialized = true;
   ESP_LOGI(TAG, "VoiceControl initialized successfully");
@@ -161,8 +169,12 @@ void VoiceControl::dragonTailSwing() {
   // 保存LED原始状态
   bool originalLedState = m_ledOn;
 
-  // 暂时禁用 MP3 播放
-  // Mp3Player::instance().playEmbedded(true);
+  // 播放“神龙摆尾”音效（嵌入的 dinosaur-roar.mp3）
+  auto &mp3Player = Mp3Player::instance();
+  if (mp3Player.getState() != Mp3PlayerState::Idle) {
+    mp3Player.stop();
+  }
+  mp3Player.playEmbedded(false);
 
   // 舵机左右摆动和LED闪烁同时进行
   // 舵机摆动3次，LED闪烁5次
@@ -208,9 +220,6 @@ void VoiceControl::dragonTailSwing() {
     int delayMs = std::max(m_config.swing_delay_ms, m_config.flash_delay_ms);
     vTaskDelay(pdMS_TO_TICKS(delayMs));
   }
-
-  // 暂时禁用 MP3 停止
-  // Mp3Player::instance().stop();
 
   // 恢复舵机到中间位置
   servo_set_angle(m_config.servo_center_angle);

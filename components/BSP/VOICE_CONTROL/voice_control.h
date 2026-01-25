@@ -49,7 +49,7 @@ struct VoiceControlConfig {
  * - "关灯": 关闭LED
  * - "前进": 舵机右转90度
  * - "后退": 舵机左转90度
- * - "神龙摆尾": 舵机左右摆动3次，LED闪烁5次
+ * - "神龙摆尾": 舵机左右摆动3次，LED闪烁5次，并播放 dinosaur-roar.mp3
  *
  * @example
  *   VoiceControl voiceCtrl;

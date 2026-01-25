@@ -23,6 +23,11 @@ static const char *TAG = "Mp3Player";
 // 静态成员用于 I2S 写入回调
 static i2s_chan_handle_t s_txHandle = nullptr;
 
+// MAX98357 等 I2S 功放通常没有硬件静音脚；提供一个空实现避免 audio_player 解引用空函数指针
+static esp_err_t muteNoopFn(AUDIO_PLAYER_MUTE_SETTING /*setting*/) {
+  return ESP_OK;
+}
+
 // ============= 单例实现 =============
 
 Mp3Player &Mp3Player::instance() {
@@ -164,7 +169,7 @@ esp_err_t Mp3Player::init(const Mp3I2sConfig &config) {
 
   // 配置 audio_player
   audio_player_config_t playerCfg = {
-      .mute_fn = nullptr,
+      .mute_fn = muteNoopFn,
       .clk_set_fn = clkSetFn,
       .write_fn = i2sWrite,
       .priority = 5,
@@ -199,7 +204,12 @@ esp_err_t Mp3Player::startPlayback() {
     return ESP_FAIL;
   }
 
-  return audio_player_play(fp);
+  esp_err_t ret = audio_player_play(fp);
+  if (ret != ESP_OK) {
+    // audio_player_play 文档说明：非 ESP_OK 时由调用方关闭 fp
+    fclose(fp);
+  }
+  return ret;
 }
 
 esp_err_t Mp3Player::playEmbedded(bool loop) {
