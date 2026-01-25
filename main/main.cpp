@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "voice_control.h"
 #include "wake_word.h"
+#include "wifi_manager.h"
 #include <stdio.h>
 
 static const char *TAG = "main";
@@ -67,6 +68,33 @@ extern "C" void app_main(void) {
   ESP_LOGI(TAG, "    - 后退");
   ESP_LOGI(TAG, "    - 神龙摆尾");
   ESP_LOGI(TAG, "========================================");
+
+  // 启动 WiFi + Web 配网/控制
+  auto &wifiMgr = WifiManager::instance();
+  ret = wifiMgr.init({
+      .ap_ssid = "ESP32-Setup",
+      .ap_password = "", // 为空=开放热点；如需密码请设置 >= 8 位
+      .sta_connect_timeout_ms = 15000,
+      .sta_max_retry = 5,
+      .keep_ap_on_after_sta_connected = false,
+  });
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "WiFi manager init failed: %s", esp_err_to_name(ret));
+  } else {
+    wifiMgr.setCommandCallback([](int commandId) {
+      // 与语音命令 ID 对齐：0-4
+      voiceCtrl.executeCommandById(commandId);
+    });
+    wifiMgr.setStatusCallback([]() -> std::string {
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "{\"led_on\":%s,\"servo_angle\":%.1f}",
+               voiceCtrl.isLightOn() ? "true" : "false",
+               (double)voiceCtrl.getCurrentServoAngle());
+      return std::string(buf);
+    });
+    wifiMgr.start();
+  }
 
   // 主循环保持运行
   while (1) {

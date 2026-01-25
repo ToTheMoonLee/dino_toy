@@ -300,15 +300,24 @@ void VoiceControl::executeCommandById(int commandId) {
   // 3 = 后退
   // 4 = 神龙摆尾
 
+  if (commandId < 0 || commandId >= 5) {
+    ESP_LOGW(TAG, "Invalid command ID: %d", commandId);
+    return;
+  }
+
+  // 有后台队列时：统一走队列执行，避免并发触碰硬件（web/识别/其它线程）
+  if (m_eventQueue != nullptr) {
+    postCommandEvent(commandId);
+    return;
+  }
+
+  // 兜底：同步执行（无后台任务/队列时）
   VoiceCommand commands[] = {VoiceCommand::LightOn, VoiceCommand::LightOff,
                              VoiceCommand::Forward, VoiceCommand::Backward,
                              VoiceCommand::DragonTail};
 
-  if (commandId >= 0 && commandId < 5) {
-    executeCommand(commands[commandId]);
-  } else {
-    ESP_LOGW(TAG, "Invalid command ID: %d", commandId);
-  }
+  uint32_t token = m_actionToken.fetch_add(1, std::memory_order_relaxed) + 1;
+  executeCommandInternal(commands[commandId], token);
 }
 
 void VoiceControl::bindToWakeWord() {
@@ -390,7 +399,14 @@ void VoiceControl::postCommandEvent(int commandId) {
 
   if (m_eventQueue == nullptr) {
     // 兜底：没有队列时仍执行，但会阻塞调用方（不推荐）
-    executeCommandById(commandId);
+    VoiceCommand commands[] = {VoiceCommand::LightOn, VoiceCommand::LightOff,
+                               VoiceCommand::Forward, VoiceCommand::Backward,
+                               VoiceCommand::DragonTail};
+    if (commandId >= 0 && commandId < 5) {
+      executeCommandInternal(commands[commandId], token);
+    } else {
+      ESP_LOGW(TAG, "Invalid command ID: %d", commandId);
+    }
     return;
   }
 

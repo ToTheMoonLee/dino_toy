@@ -22,6 +22,7 @@ set(requires
             esp_wifi
             esp_event
             esp_netif
+            esp_http_server
             nvs_flash
             espressif__esp-sr
             chmorgan__esp-audio-player)
