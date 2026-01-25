@@ -40,6 +40,11 @@ using WifiWebCommandCallback = std::function<void(int command_id)>;
 using WifiWebStatusJsonCallback = std::function<std::string(void)>;
 
 /**
+ * @brief Web TTS 回调（传入要朗读的文本）
+ */
+using WifiWebTtsCallback = std::function<void(const std::string &text)>;
+
+/**
  * @brief WiFi 管理器：支持网页配网 + 网页控制
  *
  * - 无 WiFi 配置 / 连接失败：启动 SoftAP，用户连接热点后打开 192.168.4.1 进行配网
@@ -70,6 +75,11 @@ public:
    * @brief 设置网页状态回调（返回 JSON 对象字符串）
    */
   void setStatusCallback(WifiWebStatusJsonCallback cb) { m_statusCb = cb; }
+
+  /**
+   * @brief 设置网页 TTS 回调（把文本交给外部去合成/播放）
+   */
+  void setTtsCallback(WifiWebTtsCallback cb) { m_ttsCb = cb; }
 
   bool isStaConnected() const;
   std::string getStaIpAddress() const;
@@ -106,6 +116,7 @@ private:
   static esp_err_t handleWifiPage(httpd_req_t *req);
   static esp_err_t handleStatus(httpd_req_t *req);
   static esp_err_t handleCmd(httpd_req_t *req);
+  static esp_err_t handleTts(httpd_req_t *req);
   static esp_err_t handleWifiSave(httpd_req_t *req);
 
   // helpers
@@ -134,6 +145,7 @@ private:
   // Callbacks
   WifiWebCommandCallback m_cmdCb = nullptr;
   WifiWebStatusJsonCallback m_statusCb = nullptr;
+  WifiWebTtsCallback m_ttsCb = nullptr;
 
   // event bits
   static constexpr int STA_CONNECTED_BIT = BIT0;

@@ -6,6 +6,9 @@ set(src_dirs
             "WAKE_WORD"
             "VOICE_CONTROL"
             "MP3_PLAYER"
+            "CLOUD_TTS"
+            "CLOUD_CHAT"
+            "VOICE_DIALOG"
 )
 set(include_dirs
             "LED"
@@ -15,6 +18,9 @@ set(include_dirs
             "WAKE_WORD"
             "VOICE_CONTROL"
             "MP3_PLAYER"
+            "CLOUD_TTS"
+            "CLOUD_CHAT"
+            "VOICE_DIALOG"
 )
 set(requires
             driver
@@ -23,6 +29,7 @@ set(requires
             esp_event
             esp_netif
             esp_http_server
+            esp_http_client
             nvs_flash
             espressif__esp-sr
             chmorgan__esp-audio-player)

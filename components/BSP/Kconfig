@@ -1,0 +1,55 @@
+menu "Cloud Voice"
+
+config CLOUD_TTS_PROXY_URL
+    string "Cloud TTS proxy URL"
+    default ""
+    help
+        HTTP endpoint used by the ESP32 device to fetch synthesized speech.
+        The proxy is recommended to run on your LAN and handle Qwen/DashScope
+        credentials server-side for better maintainability.
+
+        Example:
+          http://192.168.1.10:8000/tts
+
+config CLOUD_CHAT_PROXY_URL
+    string "Cloud Chat proxy URL"
+    default ""
+    help
+        HTTP endpoint used by the ESP32 device to upload user audio and get
+        assistant speech back (audio/wav).
+
+        Example:
+          http://192.168.1.10:8000/chat
+
+config CLOUD_CHAT_PCM_PROXY_URL
+    string "Cloud Chat PCM stream URL (low latency)"
+    default ""
+    help
+        Optional low-latency endpoint. The ESP32 uploads user audio (audio/wav),
+        and the server responds with streaming 16-bit PCM (audio/L16) so the
+        device can play while the assistant is still synthesizing.
+
+        Example:
+          http://192.168.1.10:8000/chat_pcm
+
+config DIALOG_SESSION_TIMEOUT_MS
+    int "Dialog session timeout (ms)"
+    default 45000
+    help
+        After wake, if no user speech is detected for this long, the device
+        exits dialog mode and returns to wake-word listening.
+
+config DIALOG_END_SILENCE_MS
+    int "End-of-utterance silence (ms)"
+    default 450
+    help
+        In dialog mode, how long of silence after speech is considered as the
+        end of an utterance.
+
+config DIALOG_MAX_UTTERANCE_MS
+    int "Max utterance length (ms)"
+    default 8000
+    help
+        Hard cap to avoid very long recordings consuming memory.
+
+endmenu

@@ -1,15 +1,21 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
+#include "cloud_chat.h"
+#include "cloud_tts.h"
+#include "voice_dialog.h"
 #include "voice_control.h"
 #include "wake_word.h"
 #include "wifi_manager.h"
 #include <stdio.h>
+#include <string.h>
 
 static const char *TAG = "main";
 
 // 语音控制实例
 static VoiceControl voiceCtrl;
+static VoiceDialog voiceDialog;
 
 extern "C" void app_main(void) {
   ESP_LOGI(TAG, "========================================");
@@ -48,8 +54,44 @@ extern "C" void app_main(void) {
     return;
   }
 
-  // 绑定语音控制到唤醒词模块
-  voiceCtrl.bindToWakeWord();
+  // 启用对话模式：唤醒后可连续多轮对话（本地命令仍保留）
+  const bool usePcmStream = (strlen(CONFIG_CLOUD_CHAT_PCM_PROXY_URL) > 0);
+  const char *chatUrl =
+      usePcmStream ? CONFIG_CLOUD_CHAT_PCM_PROXY_URL : CONFIG_CLOUD_CHAT_PROXY_URL;
+  const bool dialogEnabled = (strlen(chatUrl) > 0);
+  wakeWord.setDialogConfig({
+      .enabled = dialogEnabled,
+      .session_timeout_ms = CONFIG_DIALOG_SESSION_TIMEOUT_MS,
+  });
+
+  // 初始化对话模块（语音分段 + 上云对话 + 播报）
+  voiceDialog.init({
+      .chat_url = chatUrl,
+      .sample_rate_hz = 16000,
+      .use_pcm_stream = usePcmStream,
+      .min_speech_ms = 300,
+      .end_silence_ms = CONFIG_DIALOG_END_SILENCE_MS,
+      .max_utterance_ms = CONFIG_DIALOG_MAX_UTTERANCE_MS,
+      .max_pcm_ms = CONFIG_DIALOG_MAX_UTTERANCE_MS + CONFIG_DIALOG_END_SILENCE_MS +
+                    2000,
+      .worker_stack = 8192,
+      .worker_prio = 4,
+      .worker_core = 0,
+  });
+
+  // 统一在 main 分发 WakeWord 回调：保留原命令功能，同时接入对话
+  wakeWord.setCallback([](int /*index*/) {
+    voiceCtrl.onWakeDetected();
+    voiceDialog.onWakeDetected();
+  });
+  wakeWord.setCommandCallback([](int commandId, const char * /*commandText*/) {
+    voiceCtrl.executeCommandById(commandId);
+    voiceDialog.onLocalCommandDetected();
+  });
+  wakeWord.setAudioFrameCallback([](const int16_t *samples, int numSamples,
+                                    vad_state_t vad) {
+    voiceDialog.onAudioFrame(samples, numSamples, vad);
+  });
 
   // 启动语音识别
   ret = wakeWord.start();
@@ -61,12 +103,13 @@ extern "C" void app_main(void) {
   ESP_LOGI(TAG, "========================================");
   ESP_LOGI(TAG, "  系统已就绪!");
   ESP_LOGI(TAG, "  唤醒词: \"小鹿，小鹿\"");
-  ESP_LOGI(TAG, "  支持的命令:");
-  ESP_LOGI(TAG, "    - 开灯");
-  ESP_LOGI(TAG, "    - 关灯");
-  ESP_LOGI(TAG, "    - 前进");
-  ESP_LOGI(TAG, "    - 后退");
-  ESP_LOGI(TAG, "    - 神龙摆尾");
+  ESP_LOGI(TAG, "  支持的本地命令:");
+  ESP_LOGI(TAG, "    - 开灯 / 关灯 / 前进 / 后退 / 神龙摆尾");
+  if (dialogEnabled) {
+    ESP_LOGI(TAG, "  对话模式: 已启用 (Cloud Chat URL 已配置)");
+  } else {
+    ESP_LOGW(TAG, "  对话模式: 未启用 (请在 menuconfig 设置 Cloud Chat URL)");
+  }
   ESP_LOGI(TAG, "========================================");
 
   // 启动 WiFi + Web 配网/控制
@@ -81,6 +124,13 @@ extern "C" void app_main(void) {
   if (ret != ESP_OK) {
     ESP_LOGW(TAG, "WiFi manager init failed: %s", esp_err_to_name(ret));
   } else {
+    // 初始化 Cloud TTS（建议配合局域网 proxy，避免在固件里放 API Key）
+    CloudTts::instance().init({
+        .url = CONFIG_CLOUD_TTS_PROXY_URL,
+        .timeout_ms = 15000,
+        .max_response_bytes = 1024 * 1024,
+    });
+
     wifiMgr.setCommandCallback([](int commandId) {
       // 与语音命令 ID 对齐：0-4
       voiceCtrl.executeCommandById(commandId);
@@ -93,11 +143,20 @@ extern "C" void app_main(void) {
                (double)voiceCtrl.getCurrentServoAngle());
       return std::string(buf);
     });
+    wifiMgr.setTtsCallback([](const std::string &text) {
+      auto &tts = CloudTts::instance();
+      if (tts.getUrl().empty()) {
+        ESP_LOGW(TAG, "CONFIG_CLOUD_TTS_PROXY_URL is empty, skip tts");
+        return;
+      }
+      (void)tts.speak(text);
+    });
     wifiMgr.start();
   }
 
   // 主循环保持运行
   while (1) {
+    voiceDialog.tick();
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }

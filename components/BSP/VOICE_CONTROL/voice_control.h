@@ -135,6 +135,11 @@ public:
   void bindToWakeWord();
 
   /**
+   * @brief 外部通知唤醒词已触发（用于对话模式下统一在 main 分发回调）
+   */
+  void onWakeDetected();
+
+  /**
    * @brief 根据命令ID执行对应操作
    * @param commandId 命令ID (0-4)
    */

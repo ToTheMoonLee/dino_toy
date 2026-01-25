@@ -346,6 +346,8 @@ void VoiceControl::bindToWakeWord() {
   ESP_LOGI(TAG, "VoiceControl 已绑定到 WakeWord 组件");
 }
 
+void VoiceControl::onWakeDetected() { postWakeEvent(); }
+
 void VoiceControl::blinkLed(int count, int delay_ms, uint32_t token) {
   if (count <= 0) {
     return;

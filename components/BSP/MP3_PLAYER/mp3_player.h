@@ -3,6 +3,10 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/stream_buffer.h"
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 
 /**
@@ -63,6 +67,33 @@ public:
   esp_err_t playEmbedded(bool loop = false);
 
   /**
+   * @brief 播放内存中的音频数据（WAV/MP3）
+   *
+   * @note data 必须来自 malloc/realloc 等可 free 的内存；播放器会接管并在播放结束/stop 时释放。
+   */
+  esp_err_t playOwnedBuffer(uint8_t *data, size_t len, bool loop = false);
+
+  /**
+   * @brief 开始播放 PCM 流（16-bit little-endian mono），用于低延迟语音对话
+   *
+   * @note 会停止当前播放（MP3/WAV），并切换 I2S 时钟到指定采样率。
+   */
+  esp_err_t pcmStreamBegin(uint32_t sample_rate_hz, uint32_t prebuffer_ms = 80);
+
+  /**
+   * @brief 写入 PCM 数据（16-bit little-endian mono）
+   *
+   * @return ESP_OK 成功；超时/失败会返回错误码
+   */
+  esp_err_t pcmStreamWrite(const uint8_t *data, size_t len,
+                           uint32_t timeout_ms = 1000);
+
+  /**
+   * @brief 结束 PCM 流（会播放完缓冲区后回到 Idle）
+   */
+  esp_err_t pcmStreamEnd();
+
+  /**
    * @brief 暂停播放
    * @return ESP_OK 成功
    */
@@ -113,6 +144,9 @@ private:
   // 启动播放
   esp_err_t startPlayback();
 
+  void waitForIdle(uint32_t timeout_ms);
+  void freeActiveBuffer();
+
   // 静态回调函数（用于 audio_player）
   static void audioCallback(void *ctx);
 
@@ -124,10 +158,26 @@ private:
   static esp_err_t clkSetFn(uint32_t rate, uint32_t bits_cfg,
                             i2s_slot_mode_t ch);
 
+  // PCM stream task
+  static void pcmStreamTask(void *arg);
+  void stopPcmStreamInternal(bool waitIdle);
+
   // 成员变量
   bool m_initialized = false;
   volatile Mp3PlayerState m_state = Mp3PlayerState::Idle;
   Mp3PlayerCallback m_callback = nullptr;
   i2s_chan_handle_t m_txHandle = nullptr;
   bool m_loopEnabled = false;
+
+  enum class Source : uint8_t { EmbeddedMp3 = 0, OwnedBuffer = 1 };
+  Source m_source = Source::EmbeddedMp3;
+  uint8_t *m_activeBuf = nullptr;
+  size_t m_activeBufLen = 0;
+
+  // PCM streaming (input is mono S16LE)
+  StreamBufferHandle_t m_pcmStream = nullptr;
+  TaskHandle_t m_pcmTask = nullptr;
+  volatile bool m_pcmStop = false;
+  size_t m_pcmPrebufferBytes = 0;
+  uint32_t m_pcmSampleRate = 16000;
 };

@@ -6,6 +6,7 @@
 #include "esp_mn_iface.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <atomic>
 #include <functional>
 
 /**
@@ -15,7 +16,8 @@ enum class WakeWordState {
   Idle = 0,        /*!< 空闲状态 */
   Running,         /*!< 等待唤醒词 */
   Detected,        /*!< 唤醒词已检测到 */
-  ListeningCommand /*!< 正在监听命令词 */
+  ListeningCommand, /*!< 正在监听命令词 */
+  Dialog            /*!< 对话模式：连续语音交互 */
 };
 
 /**
@@ -33,6 +35,17 @@ using CommandCallback =
     std::function<void(int command_id, const char *command_text)>;
 
 /**
+ * @brief AFE 音频帧回调（对话时用于录音/上传）
+ *
+ * @param samples    单通道 16bit PCM
+ * @param numSamples 样本数
+ * @param vadState   VAD 状态（VAD_SPEECH / VAD_SILENCE）
+ */
+using AudioFrameCallback =
+    std::function<void(const int16_t *samples, int numSamples,
+                       vad_state_t vadState)>;
+
+/**
  * @brief I2S 麦克风配置
  */
 struct I2sConfig {
@@ -47,6 +60,14 @@ struct I2sConfig {
  */
 struct CommandConfig {
   int timeout_ms = 6000; /*!< 命令词识别超时时间 (毫秒) */
+};
+
+/**
+ * @brief 对话模式配置
+ */
+struct DialogConfig {
+  bool enabled = false;           /*!< 唤醒后进入对话模式 */
+  int session_timeout_ms = 20000; /*!< 多少毫秒无语音则退出对话 */
 };
 
 /**
@@ -105,6 +126,28 @@ public:
   void setCommandCallback(CommandCallback callback) {
     m_commandCallback = callback;
   }
+
+  /**
+   * @brief 设置音频帧回调（对话模式用）
+   */
+  void setAudioFrameCallback(AudioFrameCallback callback) {
+    m_audioFrameCallback = callback;
+  }
+
+  /**
+   * @brief 设置对话模式配置
+   */
+  void setDialogConfig(const DialogConfig &cfg);
+
+  /**
+   * @brief 对话模式下：触碰 keep-alive，避免长回复时被 session timeout 退出
+   */
+  void touchDialog();
+
+  /**
+   * @brief 请求退出对话模式（异步；由内部检测任务执行实际切换）
+   */
+  void requestExitDialog();
 
   /**
    * @brief 启动唤醒词检测
@@ -193,4 +236,12 @@ private:
   // 命令词监听状态
   volatile bool m_listeningCommand = false;
   TickType_t m_commandStartTime = 0;
+
+  // 对话模式
+  DialogConfig m_dialogCfg;
+  std::atomic<uint32_t> m_dialogLastActivityTick{0};
+  std::atomic<bool> m_exitDialogRequested{false};
+  bool m_prevVadSpeech = false;
+  bool m_prevSpeakerPlaying = false;
+  AudioFrameCallback m_audioFrameCallback = nullptr;
 };

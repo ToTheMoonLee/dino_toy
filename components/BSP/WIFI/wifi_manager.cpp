@@ -441,6 +441,7 @@ static const char *kHtmlRoot = R"HTML(
     button { padding: 12px 14px; border: 1px solid #222; background: #fff; border-radius: 10px; }
     button:active { background: #eee; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; }
+    input[type="text"] { width: 100%; padding: 10px; border: 1px solid #aaa; border-radius: 10px; margin: 6px 0 12px; }
     pre { white-space: pre-wrap; word-break: break-word; }
     a { color: #0366d6; }
   </style>
@@ -458,6 +459,15 @@ static const char *kHtmlRoot = R"HTML(
     </div>
   </div>
 
+  <h3>TTS</h3>
+  <div class="card">
+    <input id="ttsText" type="text" placeholder="输入要朗读的文本，例如：你好，我是ESP32" />
+    <div class="row">
+      <button onclick="tts()">朗读</button>
+    </div>
+    <pre id="ttsRet"></pre>
+  </div>
+
   <h3>状态</h3>
   <div class="card">
     <pre id="status">loading...</pre>
@@ -470,6 +480,22 @@ async function cmd(id) {
     await refresh();
   } catch (e) {
     console.log(e);
+  }
+}
+
+async function tts() {
+  const text = document.getElementById('ttsText').value || '';
+  if (!text.trim()) return;
+  try {
+    document.getElementById('ttsRet').textContent = 'requesting...';
+    const r = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body: text
+    });
+    document.getElementById('ttsRet').textContent = await r.text();
+  } catch (e) {
+    document.getElementById('ttsRet').textContent = 'tts error: ' + e;
   }
 }
 
@@ -528,7 +554,7 @@ esp_err_t WifiManager::startWebServer() {
 
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.server_port = 80;
-  cfg.max_uri_handlers = 10;
+  cfg.max_uri_handlers = 12;
 
   esp_err_t ret = httpd_start(&m_httpd, &cfg);
   if (ret != ESP_OK) {
@@ -560,6 +586,12 @@ esp_err_t WifiManager::startWebServer() {
                      .handler = &WifiManager::handleCmd,
                      .user_ctx = this};
   httpd_register_uri_handler(m_httpd, &cmd);
+
+  httpd_uri_t tts = {.uri = "/api/tts",
+                     .method = HTTP_POST,
+                     .handler = &WifiManager::handleTts,
+                     .user_ctx = this};
+  httpd_register_uri_handler(m_httpd, &tts);
 
   httpd_uri_t wifiSave = {.uri = "/api/wifi/save",
                           .method = HTTP_POST,
@@ -657,6 +689,63 @@ esp_err_t WifiManager::handleCmd(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/json");
   const char *ok = "{\"ok\":true}";
   return httpd_resp_send(req, ok, HTTPD_RESP_USE_STRLEN);
+}
+
+static std::string readReqBody(httpd_req_t *req);
+
+namespace {
+struct TtsTaskCtx {
+  WifiWebTtsCallback cb;
+  std::string text;
+};
+
+static void ttsTask(void *arg) {
+  auto *ctx = static_cast<TtsTaskCtx *>(arg);
+  if (ctx && ctx->cb) {
+    ctx->cb(ctx->text);
+  }
+  delete ctx;
+  vTaskDelete(nullptr);
+}
+} // namespace
+
+esp_err_t WifiManager::handleTts(httpd_req_t *req) {
+  auto *self = static_cast<WifiManager *>(req->user_ctx);
+  if (self == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no ctx");
+    return ESP_FAIL;
+  }
+  if (!self->m_ttsCb) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "tts not configured");
+    return ESP_FAIL;
+  }
+
+  std::string text = readReqBody(req);
+  // 简单限流：避免一次性塞入超长文本导致内存压力
+  if (text.empty() || text.size() > 512) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad text");
+    return ESP_FAIL;
+  }
+
+  // 放到后台任务执行，避免阻塞 httpd 线程
+  auto *ctx = new TtsTaskCtx();
+  if (!ctx) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem");
+    return ESP_FAIL;
+  }
+  ctx->cb = self->m_ttsCb;
+  ctx->text = std::move(text);
+  BaseType_t ok = xTaskCreatePinnedToCore(ttsTask, "tts_task", 8192, ctx, 4,
+                                         nullptr, 0);
+  if (ok != pdPASS) {
+    delete ctx;
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "task fail");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  const char *body = "{\"ok\":true}";
+  return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
 static std::string readReqBody(httpd_req_t *req) {

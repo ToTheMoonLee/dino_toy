@@ -22,6 +22,7 @@
 #include "esp_mn_speech_commands.h"
 
 #include "esp_wn_iface.h"
+#include "mp3_player.h"
 #include "model_path.h"
 #include <string.h>
 
@@ -47,6 +48,32 @@ static constexpr int NUM_COMMANDS = sizeof(COMMANDS) / sizeof(COMMANDS[0]);
 WakeWord &WakeWord::instance() {
   static WakeWord instance;
   return instance;
+}
+
+void WakeWord::setDialogConfig(const DialogConfig &cfg) {
+  m_dialogCfg = cfg;
+
+  if (!m_dialogCfg.enabled) {
+    return;
+  }
+
+  // Heuristic: values < 1000ms are likely configured as "seconds"
+  if (m_dialogCfg.session_timeout_ms > 0 && m_dialogCfg.session_timeout_ms < 1000) {
+    ESP_LOGW(TAG,
+             "Dialog session timeout too small (%d ms). Auto-scale x1000.",
+             m_dialogCfg.session_timeout_ms);
+    m_dialogCfg.session_timeout_ms *= 1000;
+  }
+
+  // Hard lower bound to avoid instant exit
+  if (m_dialogCfg.session_timeout_ms > 0 && m_dialogCfg.session_timeout_ms < 5000) {
+    ESP_LOGW(TAG, "Dialog session timeout clamped to 5000 ms (was %d)",
+             m_dialogCfg.session_timeout_ms);
+    m_dialogCfg.session_timeout_ms = 5000;
+  }
+
+  ESP_LOGI(TAG, "Dialog enabled, session timeout = %d ms",
+           m_dialogCfg.session_timeout_ms);
 }
 
 // ============= 任务函数 =============
@@ -128,6 +155,26 @@ void WakeWord::detectTask(void *arg) {
     ESP_LOGI(TAG, "🎙️ 退出命令监听: %s, 回到等待唤醒状态", reason ? reason : "");
   };
 
+  auto exitDialogMode = [&self](const char *reason) {
+    self.m_state = WakeWordState::Running;
+    self.m_prevVadSpeech = false;
+    self.m_prevSpeakerPlaying = false;
+    self.m_exitDialogRequested.store(false, std::memory_order_relaxed);
+
+    // 清理 MultiNet 状态
+    if (self.m_mnHandle && self.m_mnData) {
+      self.m_mnHandle->clean(self.m_mnData);
+    }
+
+    // 重新启用唤醒词并清空缓冲
+    if (self.m_afeHandle && self.m_afeData) {
+      self.m_afeHandle->reset_buffer(self.m_afeData);
+      self.m_afeHandle->enable_wakenet(self.m_afeData);
+    }
+
+    ESP_LOGI(TAG, "🗣️ 退出对话模式: %s, 回到等待唤醒状态", reason ? reason : "");
+  };
+
   while (self.m_running) {
     afe_fetch_result_t *res = self.m_afeHandle->fetch(self.m_afeData);
 
@@ -135,8 +182,9 @@ void WakeWord::detectTask(void *arg) {
       continue;
     }
 
-    // 检测到唤醒词
-    if (res->wakeup_state == WAKENET_DETECTED) {
+    // 检测到唤醒词（仅在等待唤醒阶段处理）
+    if (self.m_state == WakeWordState::Running &&
+        res->wakeup_state == WAKENET_DETECTED) {
       ESP_LOGI(TAG, "🎤 唤醒词检测到! 索引: %d", res->wake_word_index);
 
       self.m_state = WakeWordState::Detected;
@@ -156,12 +204,115 @@ void WakeWord::detectTask(void *arg) {
         self.m_callback(res->wake_word_index);
       }
 
-      // 进入命令词监听模式
-      self.m_state = WakeWordState::ListeningCommand;
-      self.m_listeningCommand = true;
-      self.m_commandStartTime = xTaskGetTickCount();
+      // 进入对话模式 or 命令词监听模式
+      if (self.m_dialogCfg.enabled) {
+        self.m_state = WakeWordState::Dialog;
+        self.m_prevVadSpeech = false;
+        self.m_prevSpeakerPlaying = false;
+        self.m_dialogLastActivityTick.store((uint32_t)xTaskGetTickCount(),
+                                            std::memory_order_relaxed);
+        self.m_exitDialogRequested.store(false, std::memory_order_relaxed);
+        ESP_LOGI(TAG, "🗣️ 进入对话模式...");
+      } else {
+        self.m_state = WakeWordState::ListeningCommand;
+        self.m_listeningCommand = true;
+        self.m_commandStartTime = xTaskGetTickCount();
+        ESP_LOGI(TAG, "🎧 开始监听命令词...");
+      }
+    }
 
-      ESP_LOGI(TAG, "🎧 开始监听命令词...");
+    // 对话模式：持续输出音频帧 + 可选本地命令识别
+    if (self.m_state == WakeWordState::Dialog) {
+      bool speakerPlaying =
+          (Mp3Player::instance().getState() != Mp3PlayerState::Idle);
+
+      // 用户有语音 -> 刷新会话活跃时间
+      if (!speakerPlaying && res->vad_state == VAD_SPEECH) {
+        self.m_dialogLastActivityTick.store((uint32_t)xTaskGetTickCount(),
+                                            std::memory_order_relaxed);
+      }
+
+      // 音频帧回调（对话录音/上传由外部完成；这里不做耗时操作）
+      if (self.m_audioFrameCallback && res->data && res->data_size > 0) {
+        int samples = res->data_size / (int)sizeof(int16_t);
+        self.m_audioFrameCallback(res->data, samples, res->vad_state);
+      }
+
+      // session timeout / exit request
+      TickType_t nowTick = xTaskGetTickCount();
+      uint32_t lastTick =
+          self.m_dialogLastActivityTick.load(std::memory_order_relaxed);
+      TickType_t last = (TickType_t)lastTick;
+      TickType_t diffTicks = (nowTick >= last) ? (nowTick - last) : 0;
+      uint32_t elapsedMs = (uint32_t)(diffTicks * portTICK_PERIOD_MS);
+      if (self.m_exitDialogRequested.load(std::memory_order_relaxed)) {
+        exitDialogMode("requested");
+        continue;
+      }
+      if (self.m_dialogCfg.session_timeout_ms > 0 &&
+          elapsedMs > (uint32_t)self.m_dialogCfg.session_timeout_ms) {
+        ESP_LOGI(TAG, "Dialog timeout: elapsed=%u ms, limit=%d ms",
+                 (unsigned)elapsedMs, self.m_dialogCfg.session_timeout_ms);
+        exitDialogMode("session timeout");
+        continue;
+      }
+
+      // 本地命令识别：对话模式下也保持可用，但要避免“播报时被自己触发”
+      if (self.m_mnHandle && self.m_mnData) {
+        if (speakerPlaying) {
+          if (!self.m_prevSpeakerPlaying) {
+            self.m_mnHandle->clean(self.m_mnData);
+          }
+          self.m_prevSpeakerPlaying = true;
+        } else {
+          if (self.m_prevSpeakerPlaying) {
+            self.m_mnHandle->clean(self.m_mnData);
+          }
+          self.m_prevSpeakerPlaying = false;
+
+          // Speech segment start -> reset MultiNet to reduce cross-utterance
+          // interference, while still allowing the model to finalize after
+          // speech ends.
+          if (res->vad_state == VAD_SPEECH && !self.m_prevVadSpeech) {
+            self.m_mnHandle->clean(self.m_mnData);
+          }
+
+          esp_mn_state_t mnState =
+              self.m_mnHandle->detect(self.m_mnData, res->data);
+
+          if (mnState == ESP_MN_STATE_DETECTED) {
+            esp_mn_results_t *mnResult =
+                self.m_mnHandle->get_results(self.m_mnData);
+
+            if (mnResult != nullptr && mnResult->num > 0) {
+              int commandId = mnResult->command_id[0];
+              if (commandId >= 0 && commandId < NUM_COMMANDS) {
+                const char *commandName = COMMAND_NAMES[commandId];
+
+                ESP_LOGI(
+                    TAG,
+                    "✅ 命令词识别成功(对话中): %s (ID: %d, 置信度: %.2f)",
+                    commandName, commandId, mnResult->prob[0]);
+
+                if (self.m_commandCallback) {
+                  self.m_commandCallback(commandId, commandName);
+                }
+              } else {
+                ESP_LOGW(TAG, "Invalid command id from MultiNet: %d",
+                         commandId);
+              }
+            }
+
+            // 为下一轮识别做准备
+            self.m_mnHandle->clean(self.m_mnData);
+          } else if (mnState == ESP_MN_STATE_TIMEOUT) {
+            self.m_mnHandle->clean(self.m_mnData);
+          }
+        }
+      }
+
+      self.m_prevVadSpeech = (res->vad_state == VAD_SPEECH);
+      continue;
     }
 
     // 命令词识别模式
@@ -469,6 +620,19 @@ void WakeWord::enable() {
   if (m_afeHandle && m_afeData) {
     m_afeHandle->enable_wakenet(m_afeData);
     ESP_LOGI(TAG, "唤醒词检测已启用");
+  }
+}
+
+void WakeWord::touchDialog() {
+  if (m_state == WakeWordState::Dialog) {
+    m_dialogLastActivityTick.store((uint32_t)xTaskGetTickCount(),
+                                  std::memory_order_relaxed);
+  }
+}
+
+void WakeWord::requestExitDialog() {
+  if (m_state == WakeWordState::Dialog) {
+    m_exitDialogRequested.store(true, std::memory_order_relaxed);
   }
 }
 
