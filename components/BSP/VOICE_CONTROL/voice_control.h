@@ -2,6 +2,10 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -140,8 +144,16 @@ private:
   // 解析命令文本
   VoiceCommand parseCommand(const std::string &text);
 
-  // LED快速闪烁（保持原有状态）
-  void blinkLed(int count, int delay_ms);
+  // LED快速闪烁（保持原有状态）；token!=0 时支持被新命令打断
+  void blinkLed(int count, int delay_ms, uint32_t token = 0);
+
+  // 命令执行后台任务与事件投递（避免在识别线程里做耗时动作）
+  static void workerTask(void *arg);
+  void postWakeEvent();
+  void postCommandEvent(int commandId);
+  bool shouldAbort(uint32_t token) const;
+  void executeCommandInternal(VoiceCommand command, uint32_t token);
+  void dragonTailSwing(uint32_t token);
 
   // 配置
   VoiceControlConfig m_config;
@@ -153,4 +165,9 @@ private:
 
   // 回调
   VoiceCommandCallback m_callback = nullptr;
+
+  // 后台执行与打断
+  QueueHandle_t m_eventQueue = nullptr;
+  TaskHandle_t m_workerTaskHandle = nullptr;
+  std::atomic<uint32_t> m_actionToken{0};
 };

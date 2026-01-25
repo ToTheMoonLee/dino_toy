@@ -110,6 +110,24 @@ void WakeWord::detectTask(void *arg) {
 
   ESP_LOGI(TAG, "唤醒词检测任务已启动");
 
+  auto exitCommandMode = [&self](const char *reason) {
+    self.m_listeningCommand = false;
+    self.m_state = WakeWordState::Running;
+
+    // 清理 MultiNet 状态，避免下一轮识别“接着上一轮的状态跑”
+    if (self.m_mnHandle && self.m_mnData) {
+      self.m_mnHandle->clean(self.m_mnData);
+    }
+
+    // 重新启用唤醒词，并清空 AFE ringbuffer，降低“超时后要等一会儿”的体感延迟
+    if (self.m_afeHandle && self.m_afeData) {
+      self.m_afeHandle->reset_buffer(self.m_afeData);
+      self.m_afeHandle->enable_wakenet(self.m_afeData);
+    }
+
+    ESP_LOGI(TAG, "🎙️ 退出命令监听: %s, 回到等待唤醒状态", reason ? reason : "");
+  };
+
   while (self.m_running) {
     afe_fetch_result_t *res = self.m_afeHandle->fetch(self.m_afeData);
 
@@ -122,6 +140,16 @@ void WakeWord::detectTask(void *arg) {
       ESP_LOGI(TAG, "🎤 唤醒词检测到! 索引: %d", res->wake_word_index);
 
       self.m_state = WakeWordState::Detected;
+
+      // 进入命令监听时先关闭唤醒词，避免“二次唤醒”干扰命令识别
+      if (self.m_afeHandle && self.m_afeData) {
+        self.m_afeHandle->disable_wakenet(self.m_afeData);
+      }
+
+      // 清空 MultiNet 内部状态，保证每次唤醒后命令识别从 0 开始
+      if (self.m_mnHandle && self.m_mnData) {
+        self.m_mnHandle->clean(self.m_mnData);
+      }
 
       // 调用用户回调
       if (self.m_callback) {
@@ -144,8 +172,7 @@ void WakeWord::detectTask(void *arg) {
           (currentTime - self.m_commandStartTime) * portTICK_PERIOD_MS;
       if (elapsedMs > (TickType_t)self.m_cmdConfig.timeout_ms) {
         ESP_LOGW(TAG, "⏰ 命令词识别超时");
-        self.m_listeningCommand = false;
-        self.m_state = WakeWordState::Running;
+        exitCommandMode("timeout");
         continue;
       }
 
@@ -177,14 +204,12 @@ void WakeWord::detectTask(void *arg) {
         }
 
         // 识别完成，回到等待唤醒状态
-        self.m_listeningCommand = false;
-        self.m_state = WakeWordState::Running;
+        exitCommandMode("command detected");
       }
 
       if (mnState == ESP_MN_STATE_TIMEOUT) {
         ESP_LOGW(TAG, "⏰ MultiNet 检测超时");
-        self.m_listeningCommand = false;
-        self.m_state = WakeWordState::Running;
+        exitCommandMode("mn timeout");
       }
     }
   }
