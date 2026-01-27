@@ -74,6 +74,8 @@ extern "C" void app_main(void) {
       .max_utterance_ms = CONFIG_DIALOG_MAX_UTTERANCE_MS,
       .max_pcm_ms = CONFIG_DIALOG_MAX_UTTERANCE_MS + CONFIG_DIALOG_END_SILENCE_MS +
                     2000,
+      .energy_gate_mean_abs = CONFIG_DIALOG_ENERGY_GATE_MEAN_ABS,
+      .local_command_ignore_ms = CONFIG_DIALOG_LOCAL_COMMAND_IGNORE_MS,
       .worker_stack = 8192,
       .worker_prio = 4,
       .worker_core = 0,

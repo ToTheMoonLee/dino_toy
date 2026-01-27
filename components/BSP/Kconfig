@@ -46,6 +46,25 @@ config DIALOG_END_SILENCE_MS
         In dialog mode, how long of silence after speech is considered as the
         end of an utterance.
 
+config DIALOG_ENERGY_GATE_MEAN_ABS
+    int "Dialog speech energy gate (mean abs)"
+    default 120
+    help
+        Optional extra gate for dialog speech detection.
+        If > 0, frames with mean(|pcm|) below this value will be treated as
+        non-speech even if AFE VAD says speech. This helps:
+          - reduce false "Speech start" caused by noise
+          - avoid being stuck in speech (hitting max_utterance_ms)
+
+config DIALOG_LOCAL_COMMAND_IGNORE_MS
+    int "Ignore dialog audio after local command (ms)"
+    default 800
+    help
+        In dialog mode, local commands (e.g. 开灯/关灯) should not be uploaded
+        to cloud chat. After a local command is detected, dialog audio frames
+        are ignored for this duration to avoid accidentally recording/uploading
+        the same utterance.
+
 config DIALOG_MAX_UTTERANCE_MS
     int "Max utterance length (ms)"
     default 8000

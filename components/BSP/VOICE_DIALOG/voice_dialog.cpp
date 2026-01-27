@@ -29,6 +29,22 @@ static std::string getDeviceIdFromMac() {
   return std::string(buf);
 }
 
+static uint32_t meanAbs16(const int16_t *samples, int numSamples) {
+  if (samples == nullptr || numSamples <= 0) {
+    return 0;
+  }
+  uint32_t sum = 0;
+  for (int i = 0; i < numSamples; i++) {
+    int32_t s = samples[i];
+    int32_t a = s < 0 ? -s : s;
+    if (a > 32767) {
+      a = 32767; // handle INT16_MIN
+    }
+    sum += (uint32_t)a;
+  }
+  return sum / (uint32_t)numSamples;
+}
+
 static uint8_t *buildWav16Mono(const int16_t *pcm, size_t samples,
                                int sampleRate, size_t &outLen) {
   outLen = 0;
@@ -129,6 +145,7 @@ void VoiceDialog::onWakeDetected() {
   }
   m_sessionActive = true;
   m_turnBusy.store(false, std::memory_order_relaxed);
+  m_ignoreUntilTick = 0;
   resetCapture();
 
   if (m_queue) {
@@ -146,8 +163,14 @@ void VoiceDialog::onWakeDetected() {
 void VoiceDialog::onLocalCommandDetected() {
   // 本地命令被识别：丢弃当前录音，避免同时走云端对话
   m_turnBusy.store(false, std::memory_order_relaxed);
-  m_dropCurrentUtterance = true;
   resetCapture();
+  int ignoreMs = std::max(0, m_cfg.local_command_ignore_ms);
+  if (ignoreMs > 0) {
+    m_ignoreUntilTick =
+        (uint32_t)xTaskGetTickCount() + (uint32_t)pdMS_TO_TICKS(ignoreMs);
+  } else {
+    m_ignoreUntilTick = 0;
+  }
 
   // 尽量清掉队列里尚未处理的语音，避免“命令也执行了、云端也回了一句”
   if (m_queue) {
@@ -187,6 +210,17 @@ void VoiceDialog::onAudioFrame(const int16_t *samples, int numSamples,
     return;
   }
 
+  // After local command, ignore a short window to avoid uploading the command
+  // utterance to cloud chat.
+  if (m_ignoreUntilTick != 0) {
+    uint32_t now = (uint32_t)xTaskGetTickCount();
+    if ((int32_t)(now - m_ignoreUntilTick) < 0) {
+      WakeWord::instance().touchDialog();
+      return;
+    }
+    m_ignoreUntilTick = 0;
+  }
+
   // Single-turn policy: while waiting assistant reply, ignore new speech
   if (m_turnBusy.load(std::memory_order_relaxed)) {
     WakeWord::instance().touchDialog();
@@ -207,14 +241,22 @@ void VoiceDialog::onAudioFrame(const int16_t *samples, int numSamples,
     m_frameMs = std::max(1, (numSamples * 1000) / m_cfg.sample_rate_hz);
   }
 
-  if (vad == VAD_SPEECH) {
+  uint32_t meanAbs = meanAbs16(samples, numSamples);
+  bool speechFrame = (vad == VAD_SPEECH);
+  if (m_cfg.energy_gate_mean_abs > 0 &&
+      meanAbs < (uint32_t)m_cfg.energy_gate_mean_abs) {
+    speechFrame = false;
+  }
+
+  if (speechFrame) {
     if (!m_inSpeech) {
       m_inSpeech = true;
       m_dropCurrentUtterance = false;
       m_speechMs = 0;
       m_silenceMs = 0;
       m_pcm.clear();
-      ESP_LOGI(TAG, "Speech start");
+      ESP_LOGI(TAG, "Speech start (vad=%d meanAbs=%u gate=%d)", (int)vad,
+               (unsigned)meanAbs, m_cfg.energy_gate_mean_abs);
     }
     m_speechMs += m_frameMs;
     WakeWord::instance().touchDialog();
@@ -235,7 +277,8 @@ void VoiceDialog::onAudioFrame(const int16_t *samples, int numSamples,
 
   // Hard cap
   bool forcedFinalize = false;
-  if (m_speechMs > m_cfg.max_utterance_ms || m_speechMs > m_cfg.max_pcm_ms) {
+  int totalMs = m_speechMs + m_silenceMs;
+  if (totalMs > m_cfg.max_utterance_ms || totalMs > m_cfg.max_pcm_ms) {
     m_silenceMs = m_cfg.end_silence_ms;
     forcedFinalize = true;
   }
@@ -271,8 +314,9 @@ void VoiceDialog::onAudioFrame(const int16_t *samples, int numSamples,
     return;
   }
 
-  ESP_LOGI(TAG, "Utterance finalize: speech=%dms silence=%dms samples=%u",
-           m_speechMs, m_silenceMs, (unsigned)totalSamples);
+  ESP_LOGI(
+      TAG, "Utterance finalize: speech=%dms silence=%dms samples=%u forced=%d",
+      m_speechMs, m_silenceMs, (unsigned)totalSamples, forcedFinalize ? 1 : 0);
 
   int16_t *pcmCopy =
       (int16_t *)malloc(totalSamples * sizeof(int16_t));

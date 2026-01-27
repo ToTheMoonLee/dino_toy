@@ -70,6 +70,16 @@ ffmpeg -f s16le -ar 16000 -ac 1 -i reply.pcm reply.wav
 - `Cloud Voice -> Cloud Chat PCM stream URL`
   - 例如 `http://你的电脑IP:8000/chat_pcm`
 
+（推荐）如果你发现经常出现 `speech=8032ms` 或者“自己在那儿乱说/乱上传”的情况：
+
+- `Cloud Voice -> Dialog speech energy gate (mean abs)`
+  - 默认 `120`，噪声大就调高一点（例如 `180~300`）
+
+（推荐）如果你希望本地命令（开灯/关灯…）不要触发云端对话：
+
+- `Cloud Voice -> Ignore dialog audio after local command (ms)`
+  - 默认 `800ms`
+
 然后刷机：
 
 - 打开 ESP32 控制页 `/`：可用 `TTS` 输入框做文本朗读

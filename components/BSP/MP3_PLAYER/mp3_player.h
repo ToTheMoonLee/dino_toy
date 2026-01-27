@@ -180,4 +180,8 @@ private:
   volatile bool m_pcmStop = false;
   size_t m_pcmPrebufferBytes = 0;
   uint32_t m_pcmSampleRate = 16000;
+  
+  // PSRAM buffer for static stream buffer (nullptr if using internal RAM)
+  uint8_t *m_pcmStreamBuf = nullptr;
+  StaticStreamBuffer_t m_pcmStreamStorage;
 };

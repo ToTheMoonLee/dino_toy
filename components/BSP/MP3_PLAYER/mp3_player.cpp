@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include "esp_heap_caps.h"
 
 // 嵌入的 MP3 文件
 extern const uint8_t mp3_start[] asm("_binary_dinosaur_roar_mp3_start");
@@ -419,6 +420,11 @@ void Mp3Player::pcmStreamTask(void *arg) {
     vStreamBufferDelete(self->m_pcmStream);
     self->m_pcmStream = nullptr;
   }
+  // Free PSRAM buffer if used
+  if (self->m_pcmStreamBuf) {
+    heap_caps_free(self->m_pcmStreamBuf);
+    self->m_pcmStreamBuf = nullptr;
+  }
   self->m_pcmStop = false;
 
   self->m_state = Mp3PlayerState::Idle;
@@ -442,6 +448,11 @@ void Mp3Player::stopPcmStreamInternal(bool waitIdle) {
     if (m_pcmStream) {
       vStreamBufferDelete(m_pcmStream);
       m_pcmStream = nullptr;
+    }
+    // Free PSRAM buffer if used
+    if (m_pcmStreamBuf) {
+      heap_caps_free(m_pcmStreamBuf);
+      m_pcmStreamBuf = nullptr;
     }
     m_pcmStop = false;
     return;
@@ -484,11 +495,28 @@ esp_err_t Mp3Player::pcmStreamBegin(uint32_t sample_rate_hz,
                  I2S_SLOT_MODE_STEREO);
 
   // Create stream buffer (~1s for 16k mono; scale with sample rate)
-  size_t bufBytes = std::max((size_t)32 * 1024,
+  // Prefer PSRAM for large buffer to avoid internal RAM exhaustion
+  size_t bufBytes = std::max((size_t)16 * 1024,
                              (size_t)(sample_rate_hz * 2)); // mono bytes/sec
-  bufBytes = std::min(bufBytes, (size_t)96 * 1024);
-  m_pcmStream = xStreamBufferCreate(bufBytes, 1);
+  bufBytes = std::min(bufBytes, (size_t)48 * 1024);
+
+  // Try PSRAM first, fallback to internal RAM
+  uint8_t *bufMem = (uint8_t *)heap_caps_malloc(bufBytes + 1, MALLOC_CAP_SPIRAM);
+  if (bufMem) {
+    m_pcmStream = xStreamBufferCreateStatic(bufBytes, 1, bufMem, &m_pcmStreamStorage);
+    m_pcmStreamBuf = bufMem;
+    ESP_LOGI(TAG, "PCM buffer allocated from PSRAM: %u bytes", (unsigned)bufBytes);
+  } else {
+    // Fallback to internal RAM
+    m_pcmStream = xStreamBufferCreate(bufBytes, 1);
+    m_pcmStreamBuf = nullptr;
+    ESP_LOGW(TAG, "PSRAM alloc failed, using internal RAM for PCM buffer");
+  }
   if (!m_pcmStream) {
+    if (m_pcmStreamBuf) {
+      heap_caps_free(m_pcmStreamBuf);
+      m_pcmStreamBuf = nullptr;
+    }
     ESP_LOGE(TAG, "pcm stream buffer alloc failed");
     return ESP_ERR_NO_MEM;
   }

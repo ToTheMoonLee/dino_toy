@@ -20,6 +20,15 @@ struct VoiceDialogConfig {
   int end_silence_ms = 450;
   int max_utterance_ms = 8000;
   int max_pcm_ms = 10000; // hard cap to avoid OOM
+  // Mean-absolute-amplitude gate for speech detection.
+  // If > 0, frames with mean(|pcm|) below this value will be treated as
+  // non-speech even if VAD says speech. Helps reduce false triggers and
+  // avoids being "stuck" in speech due to noise.
+  int energy_gate_mean_abs = 0;
+
+  // After a local command is detected, ignore dialog audio frames for a short
+  // period to avoid accidentally uploading the command utterance to cloud chat.
+  int local_command_ignore_ms = 800;
 
   int worker_stack = 8192;
   int worker_prio = 4;
@@ -66,6 +75,7 @@ private:
   int m_speechMs = 0;
   int m_silenceMs = 0;
   int m_frameMs = 0;
+  uint32_t m_ignoreUntilTick = 0;
   std::vector<int16_t> m_pcm;
 
   // worker
