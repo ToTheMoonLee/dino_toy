@@ -55,15 +55,14 @@ Prerequisites:
 - ESP-IDF **v5.0+**
 - USB serial connection to the ESP32-S3 board
 
-Optional (VS Code):
+Important:
 
-- This repo includes a `.devcontainer/` based on `espressif/idf` for a ready-to-use ESP-IDF environment.
+- This repo defaults to a **16MB flash** layout (`partitions-16MB.csv` + `sdkconfig.defaults`). If your board is not 16MB, you must adjust the partition table and `Flash size` in `menuconfig`.
 
 Build:
 
 ```bash
 idf.py set-target esp32s3
-idf.py menuconfig
 idf.py build
 ```
 
@@ -78,6 +77,13 @@ Important:
 - Use **`idf.py flash`** (not only `idf.py app-flash`) at least once, because the speech models are flashed into the `model` partition.
 
 ### Menuconfig checklist
+
+If you just want to build and run quickly, start from the defaults:
+
+- This repo includes `sdkconfig.defaults` (recommended baseline).
+- Run `idf.py set-target esp32s3` then `idf.py build`.
+
+Customize in `idf.py menuconfig` if needed:
 
 - `Serial flasher config`:
   - `Flash size` → `16MB` (when using the provided 16MB partition table)

@@ -55,15 +55,14 @@
 - ESP-IDF **v5.0+**
 - 开发板 USB 串口连接正常
 
-可选（VS Code）：
+重要提醒：
 
-- 本仓库包含 `.devcontainer/`（基于 `espressif/idf`），可一键获得可用的 ESP-IDF 开发环境。
+- 本仓库默认按 **16MB Flash** 来配置（`partitions-16MB.csv` + `sdkconfig.defaults`）。如果你的板子不是 16MB，需要在 `menuconfig` 里调整分区表与 `Flash size`。
 
 编译：
 
 ```bash
 idf.py set-target esp32s3
-idf.py menuconfig
 idf.py build
 ```
 
@@ -78,6 +77,13 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - 至少执行一次 **`idf.py flash`**（不要只用 `idf.py app-flash`），因为语音模型会被写入 `model` 分区。
 
 ### Menuconfig 必配项
+
+如果你只想快速编译运行，建议直接用默认配置：
+
+- 本仓库提供 `sdkconfig.defaults`（推荐基线配置）。
+- 执行 `idf.py set-target esp32s3` 后直接 `idf.py build` 即可。
+
+如需定制再打开 `idf.py menuconfig`：
 
 - `Serial flasher config`：
   - `Flash size` → `16MB`（使用 16MB 分区表时必须匹配）
