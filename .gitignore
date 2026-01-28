@@ -77,3 +77,7 @@ Desktop.ini
 *.workspace # General workspace files, can be from various tools
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
+
+# Local assistant / devcontainer configs (keep local, don't publish)
+.claude/
+.devcontainer/
