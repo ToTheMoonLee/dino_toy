@@ -364,11 +364,13 @@ void Mp3Player::pcmStreamTask(void *arg) {
 
   static constexpr size_t kInChunkBytes = 1024; // mono bytes
   static constexpr size_t kOutChunkBytes = kInChunkBytes * 2; // stereo bytes
-  uint8_t *inBuf = (uint8_t *)malloc(kInChunkBytes);
+  uint8_t *inBuf = (uint8_t *)malloc(kInChunkBytes + 1); // +1 for tail byte
   uint8_t *outBuf = (uint8_t *)malloc(kOutChunkBytes);
   if (!inBuf || !outBuf) {
     ESP_LOGE(TAG, "pcm stream malloc failed");
   }
+  bool hasTail = false;
+  uint8_t tail = 0;
 
   while (true) {
     if (!inBuf || !outBuf) {
@@ -382,20 +384,30 @@ void Mp3Player::pcmStreamTask(void *arg) {
       break;
     }
 
-    size_t got = xStreamBufferReceive(self->m_pcmStream, inBuf, kInChunkBytes,
+    size_t recvOffset = hasTail ? 1 : 0;
+    if (hasTail) {
+      inBuf[0] = tail;
+    }
+    size_t got = xStreamBufferReceive(self->m_pcmStream, inBuf + recvOffset,
+                                      kInChunkBytes - recvOffset,
                                       pdMS_TO_TICKS(100));
     if (got == 0) {
       continue;
     }
-    if (got % 2 == 1) {
-      got -= 1;
+    size_t total = got + recvOffset;
+    hasTail = false;
+    if (total % 2 == 1) {
+      // Preserve alignment across reads: keep the last byte for the next round
+      tail = inBuf[total - 1];
+      hasTail = true;
+      total -= 1;
     }
-    if (got == 0) {
+    if (total == 0) {
       continue;
     }
 
     // mono S16LE -> stereo S16LE (duplicate samples)
-    int samples = (int)(got / 2);
+    int samples = (int)(total / 2);
     auto *in = reinterpret_cast<const int16_t *>(inBuf);
     auto *out = reinterpret_cast<int16_t *>(outBuf);
     for (int i = 0; i < samples; i++) {

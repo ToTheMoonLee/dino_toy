@@ -9,6 +9,10 @@ set(src_dirs
             "CLOUD_TTS"
             "CLOUD_CHAT"
             "VOICE_DIALOG"
+            "STATE_MACHINE"
+            "OTA"
+            "WEBSOCKET_CHAT"
+            "DISPLAY"
 )
 set(include_dirs
             "LED"
@@ -21,6 +25,10 @@ set(include_dirs
             "CLOUD_TTS"
             "CLOUD_CHAT"
             "VOICE_DIALOG"
+            "STATE_MACHINE"
+            "OTA"
+            "WEBSOCKET_CHAT"
+            "DISPLAY"
 )
 set(requires
             driver
@@ -32,7 +40,12 @@ set(requires
             esp_http_client
             nvs_flash
             espressif__esp-sr
-            chmorgan__esp-audio-player)
+            chmorgan__esp-audio-player
+            esp_https_ota
+            espressif__esp_websocket_client
+            app_update
+            esp_lcd
+            json)
 
 idf_component_register(SRC_DIRS ${src_dirs}
                        INCLUDE_DIRS ${include_dirs}

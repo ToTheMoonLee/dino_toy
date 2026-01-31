@@ -55,10 +55,12 @@ extern "C" void app_main(void) {
   }
 
   // 启用对话模式：唤醒后可连续多轮对话（本地命令仍保留）
-  const bool usePcmStream = (strlen(CONFIG_CLOUD_CHAT_PCM_PROXY_URL) > 0);
+  // 优先使用 WebSocket 模式（延迟最低），否则回退到 HTTP 模式
+  const bool useWebSocket = (strlen(CONFIG_CLOUD_WEBSOCKET_URL) > 0);
+  const bool usePcmStream = !useWebSocket && (strlen(CONFIG_CLOUD_CHAT_PCM_PROXY_URL) > 0);
   const char *chatUrl =
       usePcmStream ? CONFIG_CLOUD_CHAT_PCM_PROXY_URL : CONFIG_CLOUD_CHAT_PROXY_URL;
-  const bool dialogEnabled = (strlen(chatUrl) > 0);
+  const bool dialogEnabled = useWebSocket || (strlen(chatUrl) > 0);
   wakeWord.setDialogConfig({
       .enabled = dialogEnabled,
       .session_timeout_ms = CONFIG_DIALOG_SESSION_TIMEOUT_MS,
@@ -67,6 +69,8 @@ extern "C" void app_main(void) {
   // 初始化对话模块（语音分段 + 上云对话 + 播报）
   voiceDialog.init({
       .chat_url = chatUrl,
+      .ws_url = CONFIG_CLOUD_WEBSOCKET_URL,
+      .use_websocket = useWebSocket,
       .sample_rate_hz = 16000,
       .use_pcm_stream = usePcmStream,
       .min_speech_ms = 300,
@@ -107,10 +111,13 @@ extern "C" void app_main(void) {
   ESP_LOGI(TAG, "  唤醒词: \"小鹿，小鹿\"");
   ESP_LOGI(TAG, "  支持的本地命令:");
   ESP_LOGI(TAG, "    - 开灯 / 关灯 / 前进 / 后退 / 神龙摆尾");
-  if (dialogEnabled) {
-    ESP_LOGI(TAG, "  对话模式: 已启用 (Cloud Chat URL 已配置)");
+  if (useWebSocket) {
+    ESP_LOGI(TAG, "  对话模式: WebSocket 实时流式 (延迟最低)");
+    ESP_LOGI(TAG, "    URL: %s", CONFIG_CLOUD_WEBSOCKET_URL);
+  } else if (dialogEnabled) {
+    ESP_LOGI(TAG, "  对话模式: HTTP %s", usePcmStream ? "(PCM Stream)" : "(WAV)");
   } else {
-    ESP_LOGW(TAG, "  对话模式: 未启用 (请在 menuconfig 设置 Cloud Chat URL)");
+    ESP_LOGW(TAG, "  对话模式: 未启用 (请在 menuconfig 设置 Cloud WebSocket/Chat URL)");
   }
   ESP_LOGI(TAG, "========================================");
 

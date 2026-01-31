@@ -9,8 +9,10 @@ import wave
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+import asyncio
+import uuid
 
 
 DEFAULT_DASHSCOPE_TTS_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
@@ -691,3 +693,258 @@ async def chat_pcm(req: Request) -> StreamingResponse:
     }
     media_type = f"audio/L16;rate={target_sr};channels=1"
     return StreamingResponse(_iter_pcm(), media_type=media_type, headers=headers)
+
+
+# ==============================================================================
+# WebSocket Streaming Endpoint (xiaozhi-compatible protocol)
+# ==============================================================================
+
+class WsSession:
+    """Per-connection WebSocket session state."""
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.device_id: str = "default"
+        self.audio_buffer = io.BytesIO()
+        self.sample_rate: int = 16000
+        self.state: str = "idle"  # idle, listening, speaking
+        self.stop_speaking = False
+
+_ws_sessions: dict[str, WsSession] = {}
+
+
+async def _ws_send_json(ws: WebSocket, msg: dict) -> bool:
+    """Send JSON message to WebSocket client."""
+    try:
+        await ws.send_text(json.dumps(msg, ensure_ascii=False))
+        return True
+    except Exception:
+        return False
+
+
+async def _ws_send_audio(ws: WebSocket, pcm_bytes: bytes) -> bool:
+    """Send binary PCM audio to WebSocket client."""
+    try:
+        await ws.send_bytes(pcm_bytes)
+        return True
+    except Exception:
+        return False
+
+
+async def _ws_handle_listen_start(ws: WebSocket, session: WsSession, mode: str):
+    """Handle listen start: prepare to receive audio."""
+    session.audio_buffer = io.BytesIO()
+    session.state = "listening"
+    print(f"[WS] Session {session.session_id}: start listening (mode={mode})")
+
+
+async def _ws_handle_listen_stop(ws: WebSocket, session: WsSession):
+    """Handle listen stop: run ASR + LLM + TTS pipeline."""
+    if session.state != "listening":
+        return
+
+    session.state = "speaking"
+    session.stop_speaking = False
+
+    api_key = _env("DASHSCOPE_API_KEY")
+    asr_model = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash")
+    llm_model = os.getenv("QWEN_LLM_MODEL", "qwen-plus")
+    voice = os.getenv("QWEN_TTS_VOICE", "Cherry")
+    tts_model = os.getenv("QWEN_TTS_REALTIME_MODEL", os.getenv("QWEN_TTS_MODEL", "qwen3-tts-flash-realtime"))
+    target_sr = int(os.getenv("QWEN_TTS_SAMPLE_RATE", "16000"))
+
+    # Get recorded audio
+    pcm_bytes = session.audio_buffer.getvalue()
+    if len(pcm_bytes) < 1600:  # less than 100ms at 16kHz 16-bit
+        print(f"[WS] Session {session.session_id}: audio too short, skip")
+        session.state = "idle"
+        return
+
+    # Convert to WAV for ASR
+    wav_bytes = _pcm_to_wav(pcm_bytes, session.sample_rate)
+    print(f"[WS] Session {session.session_id}: ASR with {len(wav_bytes)} bytes WAV")
+
+    # 1) ASR
+    try:
+        user_text = _qwen_asr(api_key=api_key, wav_bytes=wav_bytes, model=asr_model).strip()
+    except Exception as e:
+        print(f"[WS] ASR error: {e}")
+        session.state = "idle"
+        return
+
+    if not user_text:
+        print(f"[WS] Session {session.session_id}: ASR returned empty")
+        session.state = "idle"
+        return
+
+    # Send STT result
+    await _ws_send_json(ws, {
+        "session_id": session.session_id,
+        "type": "stt",
+        "text": user_text
+    })
+    print(f"[WS] Session {session.session_id}: STT = {user_text}")
+
+    # 2) LLM + TTS with session memory
+    msgs = _session(session.device_id)
+    msgs.append({"role": "user", "content": user_text})
+    _trim_session(msgs, keep=int(os.getenv("QWEN_MAX_TURNS", "12")))
+
+    # Send TTS start
+    await _ws_send_json(ws, {
+        "session_id": session.session_id,
+        "type": "tts",
+        "state": "start"
+    })
+
+    # 3) Stream LLM -> TTS -> audio
+    try:
+        in_sr, out_q, stop_evt, cb = _qwen_chat_to_realtime_tts_pcm_stream(
+            api_key=api_key,
+            msgs=msgs,
+            llm_model=llm_model,
+            voice=voice,
+            tts_model=tts_model,
+            target_sample_rate=target_sr,
+        )
+
+        state = None
+        while not session.stop_speaking:
+            try:
+                chunk = out_q.get(timeout=0.1)
+            except queue.Empty:
+                if stop_evt.is_set():
+                    break
+                continue
+
+            if chunk is None:
+                break
+            if not chunk:
+                continue
+
+            # Ensure even length
+            if len(chunk) % 2 == 1:
+                chunk = chunk[:-1]
+            if not chunk:
+                continue
+
+            # Resample if needed
+            if target_sr and in_sr and target_sr != in_sr:
+                chunk, state = audioop.ratecv(chunk, 2, 1, in_sr, target_sr, state)
+                if not chunk:
+                    continue
+
+            # Send audio chunk
+            if not await _ws_send_audio(ws, chunk):
+                break
+
+            # Yield to event loop
+            await asyncio.sleep(0)
+
+        stop_evt.set()
+
+    except Exception as e:
+        print(f"[WS] TTS error: {e}")
+
+    # Send TTS stop
+    await _ws_send_json(ws, {
+        "session_id": session.session_id,
+        "type": "tts",
+        "state": "stop"
+    })
+
+    session.state = "idle"
+    print(f"[WS] Session {session.session_id}: TTS done")
+
+
+async def _ws_handle_abort(ws: WebSocket, session: WsSession):
+    """Handle abort: stop current TTS playback."""
+    session.stop_speaking = True
+    print(f"[WS] Session {session.session_id}: abort requested")
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    """
+    WebSocket streaming voice chat endpoint.
+    
+    Protocol (xiaozhi-compatible):
+    1. Client connects
+    2. Client sends: {"type": "hello", "version": 1, "audio_params": {...}}
+    3. Server replies: {"type": "hello", "session_id": "xxx", "audio_params": {...}}
+    4. Client sends: {"type": "listen", "state": "start", "mode": "auto"}
+    5. Client sends binary PCM audio frames
+    6. Client sends: {"type": "listen", "state": "stop"}
+    7. Server sends: {"type": "stt", "text": "..."}
+    8. Server sends: {"type": "tts", "state": "start"}
+    9. Server sends binary PCM audio frames
+    10. Server sends: {"type": "tts", "state": "stop"}
+    """
+    await ws.accept()
+    
+    session_id = str(uuid.uuid4())[:8]
+    session = WsSession(session_id)
+    _ws_sessions[session_id] = session
+    
+    device_id = ws.headers.get("device-id") or ws.headers.get("x-device-id") or "default"
+    session.device_id = device_id
+    
+    print(f"[WS] New connection: session={session_id}, device={device_id}")
+    
+    try:
+        while True:
+            message = await ws.receive()
+            
+            if message["type"] == "websocket.disconnect":
+                break
+            
+            if "text" in message:
+                # JSON message
+                try:
+                    data = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+                
+                msg_type = data.get("type", "")
+                
+                if msg_type == "hello":
+                    # Client hello: extract audio params
+                    audio_params = data.get("audio_params", {})
+                    session.sample_rate = audio_params.get("sample_rate", 16000)
+                    
+                    # Reply with server hello
+                    await _ws_send_json(ws, {
+                        "type": "hello",
+                        "transport": "websocket",
+                        "session_id": session_id,
+                        "audio_params": {
+                            "format": "pcm",
+                            "sample_rate": int(os.getenv("QWEN_TTS_SAMPLE_RATE", "16000")),
+                            "channels": 1
+                        }
+                    })
+                    print(f"[WS] Session {session_id}: hello handshake complete")
+                
+                elif msg_type == "listen":
+                    state = data.get("state", "")
+                    if state == "start":
+                        mode = data.get("mode", "auto")
+                        await _ws_handle_listen_start(ws, session, mode)
+                    elif state == "stop":
+                        await _ws_handle_listen_stop(ws, session)
+                
+                elif msg_type == "abort":
+                    await _ws_handle_abort(ws, session)
+            
+            elif "bytes" in message:
+                # Binary audio data
+                if session.state == "listening":
+                    session.audio_buffer.write(message["bytes"])
+    
+    except WebSocketDisconnect:
+        print(f"[WS] Session {session_id}: client disconnected")
+    except Exception as e:
+        print(f"[WS] Session {session_id}: error: {e}")
+    finally:
+        _ws_sessions.pop(session_id, None)
+        print(f"[WS] Session {session_id}: cleaned up")
+

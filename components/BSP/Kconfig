@@ -32,6 +32,19 @@ config CLOUD_CHAT_PCM_PROXY_URL
         Example:
           http://192.168.1.10:8000/chat_pcm
 
+config CLOUD_WEBSOCKET_URL
+    string "Cloud WebSocket URL (realtime streaming)"
+    default ""
+    help
+        WebSocket endpoint for real-time bidirectional streaming voice chat.
+        This provides the lowest latency: audio is streamed as you speak,
+        and responses start playing before the full reply is ready.
+
+        If set, WebSocket mode will be used instead of HTTP.
+
+        Example:
+          ws://192.168.1.10:8000/ws
+
 config DIALOG_SESSION_TIMEOUT_MS
     int "Dialog session timeout (ms)"
     default 45000

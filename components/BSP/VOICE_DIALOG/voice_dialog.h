@@ -13,6 +13,8 @@
 
 struct VoiceDialogConfig {
   std::string chat_url; // e.g. http://192.168.1.10:8000/chat
+  std::string ws_url;   // e.g. ws://192.168.1.10:8000/ws (for WebSocket mode)
+  bool use_websocket = false; // true: use WebSocket streaming, false: use HTTP
   int sample_rate_hz = 16000;
   bool use_pcm_stream = false; // server returns streaming PCM instead of WAV
 
@@ -63,6 +65,10 @@ private:
   void handleUtterance(const UtteranceEvent &ev);
   void resetCapture();
   bool shouldFinalizeOnSilence() const;
+  
+  // WebSocket mode helpers
+  void initWebSocket();
+  void handleWsAudioFrame(const int16_t *samples, int numSamples, vad_state_t vad);
 
   VoiceDialogConfig m_cfg;
   bool m_inited = false;
@@ -83,4 +89,12 @@ private:
   TaskHandle_t m_task = nullptr;
 
   std::string m_deviceId;
+  
+  // WebSocket mode state
+  bool m_wsInited = false;
+  bool m_wsListening = false;
+  uint32_t m_wsLastConnectAttemptTick = 0;
+  uint32_t m_wsTurnBusySinceTick = 0;
+  uint32_t m_wsStopListenTick = 0;  // Tick when stopListening was sent (for STT timeout)
+  std::vector<int16_t> m_wsPreRoll;
 };
